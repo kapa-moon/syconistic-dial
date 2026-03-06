@@ -31,3 +31,12 @@ export const messages = pgTable("messages", {
   sycophancyScore: integer("sycophancy_score"),
   createdAt: timestamp("created_at").defaultNow(),
 })
+
+export const feedbackRatings = pgTable("feedback_ratings", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  participantId: text("participant_id").references(() => participants.id),
+  conversationId: uuid("conversation_id").references(() => conversations.id),
+  feelingScore: integer("feeling_score"),
+  helpfulnessScore: integer("helpfulness_score"),
+  createdAt: timestamp("created_at").defaultNow(),
+})

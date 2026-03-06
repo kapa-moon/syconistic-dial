@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { MarkdownText } from "@/lib/markdown"
+import { FeedbackWidget } from "@/components/FeedbackWidget"
 
 interface Message {
   role: "user" | "assistant"
@@ -136,6 +137,7 @@ export default function Dashboard() {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
   const [loadingConversation, setLoadingConversation] = useState(false)
+  const [lastFeedbackAt, setLastFeedbackAt] = useState(0)
 
   const chatEndRef = useRef<HTMLDivElement>(null)
   const thinkingEndRef = useRef<HTMLDivElement>(null)
@@ -204,6 +206,7 @@ export default function Dashboard() {
     setMessages(messagesWithIds)
     setThinkingBlocks(rebuiltBlocks)
     setThinkingCounter(tidCounter)
+    setLastFeedbackAt(messagesWithIds.filter((m) => m.role === "assistant").length)
     setLoadingConversation(false)
   }
 
@@ -214,6 +217,7 @@ export default function Dashboard() {
     setStreamingText("")
     setStreamingThinking("")
     setInput("")
+    setLastFeedbackAt(0)
   }
 
   async function handleScoreChange(newScore: number) {
@@ -330,6 +334,16 @@ export default function Dashboard() {
         }
       }
     }
+  }
+
+  async function handleFeedbackSubmit(feelingScore: number, helpfulnessScore: number) {
+    const assistantCount = messages.filter((m) => m.role === "assistant").length
+    setLastFeedbackAt(assistantCount)
+    await fetch("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ feelingScore, helpfulnessScore, conversationId: activeConversationId }),
+    })
   }
 
   function getSliderLabel(val: number) {
@@ -501,6 +515,12 @@ export default function Dashboard() {
                     </div>
                   </div>
                 </div>
+              )}
+              {(() => {
+                const assistantCount = messages.filter((m) => m.role === "assistant").length
+                return assistantCount > 0 && assistantCount % 3 === 0 && assistantCount > lastFeedbackAt && !isLoading
+              })() && (
+                <FeedbackWidget key={messages.filter((m) => m.role === "assistant").length} onSubmit={handleFeedbackSubmit} />
               )}
               <div ref={chatEndRef} />
             </div>
