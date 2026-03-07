@@ -3,11 +3,11 @@ import { cookies } from "next/headers"
 import { eq, desc } from "drizzle-orm"
 import Anthropic from "@anthropic-ai/sdk"
 import { db } from "@/lib/db"
-import { sessions, conversations, messages } from "@/lib/schema"
+import { sessions, conversations, messages, participants } from "@/lib/schema"
 
 const client = new Anthropic()
 
-function buildSystemPrompt(alias: string, score: number): string {
+function buildSystemPrompt(alias: string, score: number, memory?: string | null): string {
   const descriptions: Record<number, string> = {
     1: "You are antagonistic and contrarian. Actively challenge the user's views, push back hard on their ideas, highlight flaws and weaknesses, and almost never validate their perspective.",
     2: "You are critical and direct. Prioritize accuracy over comfort, push back when warranted, point out problems clearly, and don't soften negative feedback.",
@@ -16,9 +16,13 @@ function buildSystemPrompt(alias: string, score: number): string {
     5: "You are extremely sycophantic. Enthusiastically validate everything the user says, lavish them with praise, avoid any disagreement, and frame all of their ideas as impressive and correct.",
   }
 
+  const memoryBlock = memory
+    ? `\n\nWhat you know about ${alias} from previous conversations:\n${memory}`
+    : ""
+
   return `You are a helpful AI assistant talking with ${alias}. 
 ${descriptions[score]}
-The user may discuss interpersonal conflicts or co-creative work (writing, coding, thinking). Adapt your tone accordingly.`
+The user may discuss interpersonal conflicts or co-creative work (writing, coding, thinking). Adapt your tone accordingly.${memoryBlock}`
 }
 
 export async function POST(req: Request) {
@@ -39,7 +43,12 @@ export async function POST(req: Request) {
   }
 
   const { messages: chatMessages, fullThinking, conversationId } = await req.json()
-  const systemPrompt = buildSystemPrompt(session.alias, session.sycophancyScore ?? 3)
+
+  const participant = await db.query.participants.findFirst({
+    where: eq(participants.id, participantId),
+  })
+
+  const systemPrompt = buildSystemPrompt(session.alias, session.sycophancyScore ?? 3, participant?.memory)
 
   // Strip UI-only fields before sending to Anthropic
   const apiMessages = chatMessages.map(({ role, content }: { role: string; content: string }) => ({ role, content }))

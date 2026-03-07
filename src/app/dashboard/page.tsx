@@ -183,6 +183,9 @@ export default function Dashboard() {
   }, [streamingThinking])
 
   async function loadConversationMessages(conversationId: string) {
+    if (activeConversationId && activeConversationId !== conversationId && messages.some((m) => m.role === "assistant")) {
+      triggerSummarize(activeConversationId)
+    }
     setLoadingConversation(true)
     setActiveConversationId(conversationId)
     setStreamingText("")
@@ -214,7 +217,14 @@ export default function Dashboard() {
     setLoadingConversation(false)
   }
 
+  function triggerSummarize(conversationId: string) {
+    fetch(`/api/conversations/${conversationId}/summarize`, { method: "POST" }).catch(() => {})
+  }
+
   function startNewChat() {
+    if (activeConversationId && messages.some((m) => m.role === "assistant")) {
+      triggerSummarize(activeConversationId)
+    }
     setActiveConversationId(null)
     setMessages([])
     setThinkingBlocks([])
@@ -381,7 +391,7 @@ export default function Dashboard() {
           </button>
           <span className="text-sm font-medium text-zinc-900">Syconistic Dial</span>
           <button
-            onClick={() => router.push("/researcher")}
+            onClick={() => router.push("/explore")}
             className="text-xs text-zinc-600 border border-zinc-300 px-2.5 py-1 rounded-md bg-white hover:bg-zinc-50 transition-colors"
           >
             Exploration View

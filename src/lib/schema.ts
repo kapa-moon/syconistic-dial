@@ -3,6 +3,7 @@ import { pgTable, text, integer, timestamp, uuid } from "drizzle-orm/pg-core"
 export const participants = pgTable("participants", {
   id: text("id").primaryKey(),        // e.g. "P001" — given by researcher
   createdAt: timestamp("created_at").defaultNow(),
+  memory: text("memory"),             // AI-generated summary of past sessions
 })
 
 export const sessions = pgTable("sessions", {
