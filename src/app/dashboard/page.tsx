@@ -38,18 +38,17 @@ function formatDate(dateStr: string) {
 }
 
 const LEVEL_COLORS: Record<number, string> = {
-  1: "#ff9100",
+  1: "#ff7e21",
   2: "#ffb24d",
-  3: "#ffd194",
-  4: "#c8c8d0",
-  5: "#94c5ff",
-  6: "#4da8ff",
-  7: "#0080ff",
+  3: "#8e8e9a",
+  4: "#4da8ff",
+  5: "#006eff",
 }
 
 function getSliderColor(s: number): string {
-  return LEVEL_COLORS[s] ?? "#c8c8d0"
+  return LEVEL_COLORS[s] ?? "#8e8e9a"
 }
+
 
 function SycophancySlider({ score, onChange }: { score: number; onChange: (v: number) => void }) {
   const trackRef = useRef<HTMLDivElement>(null)
@@ -59,10 +58,10 @@ function SycophancySlider({ score, onChange }: { score: number; onChange: (v: nu
     if (!track) return score
     const rect = track.getBoundingClientRect()
     const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
-    return Math.round(ratio * 6) + 1
+    return Math.round(ratio * 4) + 1
   }
 
-  const percent = ((score - 1) / 6) * 100
+  const percent = ((score - 1) / 4) * 100
   const color = getSliderColor(score)
 
   return (
@@ -84,12 +83,12 @@ function SycophancySlider({ score, onChange }: { score: number; onChange: (v: nu
         <div className="absolute left-0 right-0 top-1/2 h-[3px] bg-zinc-200 rounded-full -translate-y-1/2" />
 
         {/* Tick marks */}
-        {[1, 2, 3, 4, 5, 6, 7].map((level) => (
+        {[1, 2, 3, 4, 5].map((level) => (
           <div
             key={level}
             className="absolute top-1/2 w-[3px] h-[3px] rounded-full bg-zinc-400"
             style={{
-              left: `${((level - 1) / 6) * 100}%`,
+              left: `${((level - 1) / 4) * 100}%`,
               transform: "translate(-50%, -50%)",
             }}
           />
@@ -124,7 +123,7 @@ function SycophancySlider({ score, onChange }: { score: number; onChange: (v: nu
 
 export default function Dashboard() {
   const [alias, setAlias] = useState("")
-  const [score, setScore] = useState(4)
+  const [score, setScore] = useState(3)
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
   const [isLoading, setIsLoading] = useState(false)
@@ -138,7 +137,12 @@ export default function Dashboard() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
   const [loadingConversation, setLoadingConversation] = useState(false)
   const [lastFeedbackAt, setLastFeedbackAt] = useState(0)
+  const [aliasTooltipDismissed, setAliasTooltipDismissed] = useState(false)
+  const [aliasFocused, setAliasFocused] = useState(false)
+  const [scoreTooltipDismissed, setScoreTooltipDismissed] = useState(false)
+  const [scoreManuallySet, setScoreManuallySet] = useState(false)
 
+  const aliasInputRef = useRef<HTMLInputElement>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)
   const thinkingEndRef = useRef<HTMLDivElement>(null)
   const thinkingBlockRefs = useRef<Map<number, HTMLDivElement>>(new Map())
@@ -222,6 +226,7 @@ export default function Dashboard() {
 
   async function handleScoreChange(newScore: number) {
     setScore(newScore)
+    setScoreManuallySet(true)
     await fetch("/api/session", {
       method: "PATCH",
       body: JSON.stringify({ sycophancyScore: newScore }),
@@ -349,12 +354,13 @@ export default function Dashboard() {
   function getSliderLabel(val: number) {
     if (val === 1) return "Antagonistic"
     if (val === 2) return "Critical"
-    if (val === 3) return "Nuanced"
-    if (val === 4) return "Neutral"
-    if (val === 5) return "Supportive"
-    if (val === 6) return "Agreeable"
+    if (val === 3) return "Neutral"
+    if (val === 4) return "Agreeable"
     return "Sycophantic"
   }
+
+  const showAliasTooltip = !alias && !aliasTooltipDismissed
+  const showScoreTooltip = !scoreTooltipDismissed
 
   return (
     <div className="flex flex-col h-screen bg-zinc-50 font-roboto">
@@ -378,24 +384,54 @@ export default function Dashboard() {
             onClick={() => router.push("/researcher")}
             className="text-xs text-zinc-600 border border-zinc-300 px-2.5 py-1 rounded-md bg-white hover:bg-zinc-50 transition-colors"
           >
-            Researcher View
+            Exploration View
           </button>
         </div>
         <div className="flex items-center gap-3">
-          <input
-            type="text"
-            className="px-3 py-1.5 text-xs border border-zinc-200 rounded-lg bg-zinc-50 focus:bg-white focus:ring-2 focus:ring-zinc-900 outline-none"
-            placeholder="How should I call you?"
-            value={alias}
-            onChange={(e) => setAlias(e.target.value)}
-            onBlur={(e) => handleAliasUpdate(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault()
-                handleAliasUpdate(alias)
-              }
-            }}
-          />
+          {showAliasTooltip && (
+            <div className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-zinc-900 border border-zinc-200 rounded-lg bg-white whitespace-nowrap shadow-sm">
+              <span
+                className="w-2 h-2 rounded-full flex-shrink-0 cursor-pointer hover:opacity-75 transition-opacity"
+                style={{ backgroundColor: "#fc5432" }}
+                onClick={() => setAliasTooltipDismissed(true)}
+              />
+              Set your user name here.
+            </div>
+          )}
+          <span className="text-xs text-zinc-900">Username</span>
+          <div className="relative flex items-center">
+            <input
+              ref={aliasInputRef}
+              type="text"
+              className="px-3 py-1.5 text-xs border border-zinc-200 rounded-lg bg-zinc-50 focus:bg-white focus:ring-2 focus:ring-zinc-900 outline-none transition-all"
+              style={{ paddingRight: aliasFocused ? "46px" : undefined }}
+              placeholder="How should I call you?"
+              value={alias}
+              onChange={(e) => setAlias(e.target.value)}
+              onFocus={() => setAliasFocused(true)}
+              onBlur={(e) => {
+                setAliasFocused(false)
+                handleAliasUpdate(e.target.value)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault()
+                  aliasInputRef.current?.blur()
+                }
+              }}
+            />
+            {aliasFocused && (
+              <button
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  aliasInputRef.current?.blur()
+                }}
+                className="absolute right-1.5 px-1.5 py-0.5 text-[10px] font-medium text-zinc-500 bg-zinc-100 hover:bg-zinc-200 rounded transition-colors"
+              >
+                Done
+              </button>
+            )}
+          </div>
           <button
             onClick={async () => {
               await fetch("/api/logout", { method: "POST" })
@@ -561,6 +597,16 @@ export default function Dashboard() {
                 <span className="text-xs font-medium text-zinc-500 uppercase tracking-wide">Response Style</span>
                 <span className="text-xs font-semibold text-zinc-900">{getSliderLabel(score)}</span>
               </div>
+              {showScoreTooltip && (
+                <div className="flex items-center gap-1.5 px-2.5 py-1.5 mb-3 text-xs text-zinc-900 border border-zinc-200 rounded-lg bg-white shadow-sm">
+                  <span
+                    className="w-2 h-2 rounded-full flex-shrink-0 cursor-pointer hover:opacity-75 transition-opacity"
+                    style={{ backgroundColor: "#fc5432" }}
+                    onClick={() => setScoreTooltipDismissed(true)}
+                  />
+                  Tune how agreeable or critical the AI is with the slider.
+                </div>
+              )}
               <SycophancySlider score={score} onChange={handleScoreChange} />
               <div className="flex justify-between -mt-1">
                 <span className="text-xs text-zinc-400">Antagonistic</span>

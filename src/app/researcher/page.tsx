@@ -8,13 +8,11 @@ import { MarkdownText } from "@/lib/markdown"
 type ScoreMeta = { label: string; hex: string; pillBg: string; pillBorder: string }
 
 const SCORE_LABELS: Record<number, ScoreMeta> = {
-  1: { label: "Antagonistic", hex: "#ff9100", pillBg: "bg-orange-50",  pillBorder: "border-orange-200" },
+  1: { label: "Antagonistic", hex: "#ff7e21", pillBg: "bg-orange-50",  pillBorder: "border-orange-200" },
   2: { label: "Critical",     hex: "#ffb24d", pillBg: "bg-orange-50",  pillBorder: "border-orange-100" },
-  3: { label: "Nuanced",      hex: "#ffd194", pillBg: "bg-amber-50",   pillBorder: "border-amber-100"  },
-  4: { label: "Neutral",      hex: "#c8c8d0", pillBg: "bg-zinc-50",    pillBorder: "border-zinc-200"   },
-  5: { label: "Supportive",   hex: "#94c5ff", pillBg: "bg-blue-50",    pillBorder: "border-blue-100"   },
-  6: { label: "Agreeable",    hex: "#4da8ff", pillBg: "bg-blue-50",    pillBorder: "border-blue-200"   },
-  7: { label: "Sycophantic",  hex: "#0080ff", pillBg: "bg-blue-100",   pillBorder: "border-blue-300"   },
+  3: { label: "Neutral",      hex: "#8e8e9a", pillBg: "bg-zinc-50",    pillBorder: "border-zinc-200"   },
+  4: { label: "Agreeable",    hex: "#4da8ff", pillBg: "bg-blue-50",    pillBorder: "border-blue-200"   },
+  5: { label: "Sycophantic",  hex: "#006eff", pillBg: "bg-blue-100",   pillBorder: "border-blue-300"   },
 }
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -70,7 +68,7 @@ function storedToTurns(stored: StoredTurn[]): Turn[] {
   return stored.map((t) => ({
     question: t.question,
     responses: Object.fromEntries(
-      Array.from({ length: 7 }, (_, i) => {
+      Array.from({ length: 5 }, (_, i) => {
         const s = i + 1
         return [s, { text: t.responses[s]?.text ?? "", thinking: t.responses[s]?.thinking ?? "", done: true }]
       })
@@ -83,7 +81,7 @@ function turnsToStored(turns: Turn[]): StoredTurn[] {
   return turns.map((t) => ({
     question: t.question,
     responses: Object.fromEntries(
-      Array.from({ length: 7 }, (_, i) => {
+      Array.from({ length: 5 }, (_, i) => {
         const s = i + 1
         return [s, { text: t.responses[s]?.text ?? "", thinking: t.responses[s]?.thinking ?? "" }]
       })
@@ -219,20 +217,20 @@ export default function ResearcherView() {
 
     const newTurnIndex = turns.length
     const emptyResponses: Record<number, ScoreResponse> = {}
-    for (let s = 1; s <= 7; s++) emptyResponses[s] = { text: "", thinking: "", done: false }
+    for (let s = 1; s <= 5; s++) emptyResponses[s] = { text: "", thinking: "", done: false }
     setTurns((prev) => [...prev, { question, responses: emptyResponses, selectedScore: null }])
 
-    // Build conversation history: all previous turns use score-4 (Neutral) as the
+    // Build conversation history: all previous turns use score-3 (Neutral) as the
     // canonical assistant response so context is coherent across follow-ups.
     const apiMessages: { role: "user" | "assistant"; content: string }[] = [
       ...turns.flatMap((t) => [
         { role: "user" as const, content: t.question },
-        { role: "assistant" as const, content: t.responses[4]?.text || "" },
+        { role: "assistant" as const, content: t.responses[3]?.text || "" },
       ]),
       { role: "user" as const, content: question },
     ]
 
-    const scorePromises = Array.from({ length: 7 }, (_, i) => {
+    const scorePromises = Array.from({ length: 5 }, (_, i) => {
       const score = i + 1
       return streamScore(
         score,
