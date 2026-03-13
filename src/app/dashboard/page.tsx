@@ -4,6 +4,18 @@ import { useRouter } from "next/navigation"
 import { MarkdownText } from "@/lib/markdown"
 import { FeedbackWidget } from "@/components/FeedbackWidget"
 
+// ─── Score metadata (shared with exploration cards) ──────────────────────────
+
+type ScoreMeta = { label: string; hex: string; pillBg: string; pillBorder: string }
+
+const SCORE_LABELS: Record<number, ScoreMeta> = {
+  1: { label: "Antagonistic", hex: "#ff7e21", pillBg: "bg-orange-50",  pillBorder: "border-orange-200" },
+  2: { label: "Critical",     hex: "#ffb24d", pillBg: "bg-orange-50",  pillBorder: "border-orange-100" },
+  3: { label: "Neutral",      hex: "#8e8e9a", pillBg: "bg-zinc-50",    pillBorder: "border-zinc-200"   },
+  4: { label: "Agreeable",    hex: "#4da8ff", pillBg: "bg-blue-50",    pillBorder: "border-blue-200"   },
+  5: { label: "Sycophantic",  hex: "#006eff", pillBg: "bg-blue-100",   pillBorder: "border-blue-300"   },
+}
+
 interface Message {
   role: "user" | "assistant"
   content: string
@@ -11,6 +23,19 @@ interface Message {
   createdAt?: string | null
   sycophancyScore?: number | null
   thinkingId?: number
+}
+
+interface ExplorationResponse {
+  text: string
+  thinking: string
+  done: boolean
+}
+
+interface ExplorationTurn {
+  question: string
+  canonicalScore: number
+  responses: Record<number, ExplorationResponse>
+  flippedScore: number | null
 }
 
 interface ThinkingBlock {
@@ -24,6 +49,7 @@ interface Conversation {
   title: string
   createdAt: string
   updatedAt: string
+  sycophancyScore?: number | null
 }
 
 function formatDate(dateStr: string) {
@@ -49,8 +75,24 @@ function getSliderColor(s: number): string {
   return LEVEL_COLORS[s] ?? "#8e8e9a"
 }
 
+function parseChatTitle(title: string): { base: string; continuation: string | null } {
+  const match = title.match(/^(.*?)\s*(\(continued(?:\s*-\s*part\s*\d+)?\))$/i)
+  if (match) return { base: match[1].trim(), continuation: match[2] }
+  return { base: title, continuation: null }
+}
 
-function SycophancySlider({ score, onChange }: { score: number; onChange: (v: number) => void }) {
+function getForkTitle(sourceTitle: string): string {
+  const match = sourceTitle.match(/^(.*?)\s*\(continued(?:\s*-\s*part\s*(\d+))?\)$/i)
+  if (match) {
+    const base = match[1].trim()
+    const part = match[2] ? parseInt(match[2]) + 1 : 3
+    return `${base} (continued - part ${part})`
+  }
+  return `${sourceTitle} (continued - part 2)`
+}
+
+
+function SycophancySlider({ score, onChange, disabled }: { score: number; onChange: (v: number) => void; disabled?: boolean }) {
   const trackRef = useRef<HTMLDivElement>(null)
 
   function getScoreFromPointer(clientX: number): number {
@@ -62,20 +104,21 @@ function SycophancySlider({ score, onChange }: { score: number; onChange: (v: nu
   }
 
   const percent = ((score - 1) / 4) * 100
-  const color = getSliderColor(score)
+  const color = disabled ? "#c0c0c8" : getSliderColor(score)
 
   return (
-    <div className="relative w-full py-3">
+    <div className={`relative w-full py-3 ${disabled ? "opacity-50" : ""}`}>
       <div
         ref={trackRef}
-        className="relative w-full cursor-pointer"
+        className={`relative w-full ${disabled ? "cursor-not-allowed" : "cursor-pointer"}`}
         style={{ height: "44px" }}
         onPointerDown={(e) => {
+          if (disabled) return
           e.currentTarget.setPointerCapture(e.pointerId)
           onChange(getScoreFromPointer(e.clientX))
         }}
         onPointerMove={(e) => {
-          if (e.buttons === 0) return
+          if (disabled || e.buttons === 0) return
           onChange(getScoreFromPointer(e.clientX))
         }}
       >
@@ -108,7 +151,7 @@ function SycophancySlider({ score, onChange }: { score: number; onChange: (v: nu
             fontWeight: 700,
             fontSize: "15px",
             color: color,
-            cursor: "grab",
+            cursor: disabled ? "not-allowed" : "grab",
             boxShadow: "0 1px 5px rgba(0,0,0,0.13)",
             pointerEvents: "none",
             transition: "border-color 0.15s, color 0.15s",
@@ -141,6 +184,12 @@ export default function Dashboard() {
   const [aliasFocused, setAliasFocused] = useState(false)
   const [scoreTooltipDismissed, setScoreTooltipDismissed] = useState(false)
   const [scoreManuallySet, setScoreManuallySet] = useState(false)
+  const [sliderLocked, setSliderLocked] = useState(false)
+  const [conversationScores, setConversationScores] = useState<Record<string, number>>({})
+  const [explorationTurns, setExplorationTurns] = useState<ExplorationTurn[]>([])
+  const [isNewChat, setIsNewChat] = useState(false)
+  const [explorationConfirmed, setExplorationConfirmed] = useState(false)
+  const [explorationThinking, setExplorationThinking] = useState<{ thinking: string; score: number } | null>(null)
 
   const aliasInputRef = useRef<HTMLInputElement>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)
@@ -167,6 +216,12 @@ export default function Dashboard() {
       setScore(sessionData.sycophancyScore ?? 4)
       const convs: Conversation[] = convsData.conversations ?? []
       setConversations(convs)
+      // Pre-populate scores so sidebar dots are visible immediately
+      const scores: Record<string, number> = {}
+      for (const c of convs) {
+        if (c.sycophancyScore != null) scores[c.id] = c.sycophancyScore
+      }
+      setConversationScores(scores)
       if (convs.length > 0) {
         loadConversationMessages(convs[0].id)
       }
@@ -215,6 +270,21 @@ export default function Dashboard() {
     setThinkingCounter(tidCounter)
     setLastFeedbackAt(messagesWithIds.filter((m) => m.role === "assistant").length)
     setLoadingConversation(false)
+    setExplorationTurns([])
+    setIsNewChat(false)
+    setExplorationConfirmed(false)
+    setExplorationThinking(null)
+
+    // Lock slider and restore score from conversation
+    const hasMessages = messagesWithIds.length > 0
+    setSliderLocked(hasMessages)
+    if (hasMessages) {
+      const firstAssistant = messagesWithIds.find((m) => m.role === "assistant" && m.sycophancyScore != null)
+      if (firstAssistant?.sycophancyScore) {
+        setScore(firstAssistant.sycophancyScore)
+        setConversationScores((prev) => ({ ...prev, [conversationId]: firstAssistant.sycophancyScore! }))
+      }
+    }
   }
 
   function triggerSummarize(conversationId: string) {
@@ -222,7 +292,7 @@ export default function Dashboard() {
   }
 
   function startNewChat() {
-    if (activeConversationId && messages.some((m) => m.role === "assistant")) {
+    if (activeConversationId && (messages.some((m) => m.role === "assistant") || explorationTurns.length > 0)) {
       triggerSummarize(activeConversationId)
     }
     setActiveConversationId(null)
@@ -232,6 +302,11 @@ export default function Dashboard() {
     setStreamingThinking("")
     setInput("")
     setLastFeedbackAt(0)
+    setSliderLocked(false)
+    setExplorationTurns([])
+    setIsNewChat(true)
+    setExplorationConfirmed(false)
+    setExplorationThinking(null)
   }
 
   async function handleScoreChange(newScore: number) {
@@ -242,6 +317,45 @@ export default function Dashboard() {
       body: JSON.stringify({ sycophancyScore: newScore }),
       headers: { "Content-Type": "application/json" },
     })
+  }
+
+  async function forkConversation() {
+    if (isLoading) return
+
+    if (activeConversationId) triggerSummarize(activeConversationId)
+
+    // Strip thinking so the old chain-of-thought stays only in the old chat
+    const strippedMessages: Message[] = messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+      createdAt: m.createdAt,
+      sycophancyScore: m.sycophancyScore,
+      thinking: null,
+      thinkingId: undefined,
+    }))
+
+    const sourceTitle = conversations.find((c) => c.id === activeConversationId)?.title ?? "Conversation"
+    const res = await fetch("/api/conversations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: getForkTitle(sourceTitle) }),
+    })
+    const newConv: Conversation = await res.json()
+
+    setConversations((prev) => [newConv, ...prev])
+    setActiveConversationId(newConv.id)
+    setMessages(strippedMessages)
+    setThinkingBlocks([])
+    setThinkingCounter(0)
+    setStreamingText("")
+    setStreamingThinking("")
+    setInput("")
+    setLastFeedbackAt(strippedMessages.filter((m) => m.role === "assistant").length)
+    setSliderLocked(false)
+    setExplorationTurns([])
+    setIsNewChat(false)
+    setExplorationConfirmed(false)
+    setExplorationThinking(null)
   }
 
   async function handleAliasUpdate(newAlias: string) {
@@ -255,8 +369,69 @@ export default function Dashboard() {
     })
   }
 
+  // ── streamScore (used by exploration mode) ──────────────────────────────
+
+  async function streamScore(
+    s: number,
+    apiMessages: { role: string; content: string }[],
+    onText: (chunk: string) => void,
+    onThinking: (chunk: string) => void
+  ) {
+    const res = await fetch("/api/explore-chat", {
+      method: "POST",
+      body: JSON.stringify({ messages: apiMessages, score: s }),
+      headers: { "Content-Type": "application/json" },
+    })
+    const reader = res.body!.getReader()
+    const decoder = new TextDecoder()
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const chunk = decoder.decode(value)
+      for (const line of chunk.split("\n").filter((l) => l.startsWith("data: "))) {
+        const data = JSON.parse(line.slice(6))
+        if (data.type === "text") onText(data.text)
+        else if (data.type === "thinking") onThinking(data.text)
+      }
+    }
+  }
+
+  function toggleExplorationFlip(turnIndex: number, s: number) {
+    setExplorationTurns((prev) => {
+      const updated = [...prev]
+      const turn = { ...updated[turnIndex] }
+      turn.flippedScore = turn.flippedScore === s ? null : s
+      updated[turnIndex] = turn
+      return updated
+    })
+  }
+
+  async function chooseExplorationLevel(s: number, turnIndex: number, isLastTurn: boolean) {
+    await handleScoreChange(s)
+
+    // Persist the chosen level back to the assistant message for this turn in the DB
+    if (activeConversationId) {
+      fetch(`/api/conversations/${activeConversationId}/messages`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ turnIndex, sycophancyScore: s }),
+      }).catch(() => {})
+    }
+
+    if (isLastTurn) {
+      setSliderLocked(true)
+      setExplorationConfirmed(true)
+    }
+  }
+
+  // ── handleSend ───────────────────────────────────────────────────────────
+
   async function handleSend() {
     if (!input.trim() || isLoading) return
+
+    const question = input.trim()
+    setInput("")
+    setIsLoading(true)
 
     let conversationId = activeConversationId
 
@@ -265,7 +440,7 @@ export default function Dashboard() {
       const res = await fetch("/api/conversations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: input.trim().slice(0, 80) }),
+        body: JSON.stringify({ title: question.slice(0, 80) }),
       })
       const newConv: Conversation = await res.json()
       conversationId = newConv.id
@@ -273,78 +448,186 @@ export default function Dashboard() {
       setConversations((prev) => [newConv, ...prev])
     }
 
-    const userMessage: Message = { role: "user", content: input }
-    const newMessages = [...messages, userMessage]
-    setMessages(newMessages)
-    setInput("")
-    setIsLoading(true)
-    setStreamingText("")
-    setStreamingThinking("")
+    // Record the score for this conversation the first time a message is sent
+    if (conversationId) {
+      setConversationScores((prev) => prev[conversationId!] ? prev : { ...prev, [conversationId!]: score })
+    }
 
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      body: JSON.stringify({ messages: newMessages, fullThinking, conversationId }),
-      headers: { "Content-Type": "application/json" },
-    })
+    const useExploration = isNewChat && explorationTurns.length < 3
 
-    const reader = res.body!.getReader()
-    const decoder = new TextDecoder()
-    let accText = ""
-    let accThinking = ""
+    if (useExploration) {
+      // ── Exploration mode: stream all 5 sycophancy levels in parallel ──
 
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
+      // Build context from previous exploration turns (use user's canonical score)
+      const contextMessages: { role: "user" | "assistant"; content: string }[] = [
+        ...explorationTurns.flatMap((t) => [
+          { role: "user" as const, content: t.question },
+          { role: "assistant" as const, content: t.responses[t.canonicalScore]?.text || "" },
+        ]),
+        { role: "user" as const, content: question },
+      ]
 
-      const chunk = decoder.decode(value)
-      const lines = chunk.split("\n").filter((l) => l.startsWith("data: "))
+      const newTurnIndex = explorationTurns.length
+      const emptyResponses: Record<number, ExplorationResponse> = {}
+      for (let s = 1; s <= 5; s++) emptyResponses[s] = { text: "", thinking: "", done: false }
+      setExplorationTurns((prev) => [
+        ...prev,
+        { question, canonicalScore: score, responses: emptyResponses, flippedScore: null },
+      ])
 
-      for (const line of lines) {
-        const data = JSON.parse(line.slice(6))
+      // Track canonical text locally to persist after streaming
+      let canonicalText = ""
+      let canonicalThinking = ""
 
-        if (data.type === "thinking") {
-          accThinking += data.text
-          setStreamingThinking(accThinking)
-        } else if (data.type === "text") {
-          accText += data.text
-          setStreamingText(accText)
-        } else if (data.type === "done") {
-          const assignedThinkingId = thinkingCounter
-          setMessages((prev) => [
-            ...prev,
+      const scorePromises = Array.from({ length: 5 }, (_, i) => {
+        const s = i + 1
+        return streamScore(
+          s,
+          contextMessages,
+          (textChunk) => {
+            if (s === score) canonicalText += textChunk
+            setExplorationTurns((prev) => {
+              const updated = [...prev]
+              const turn = { ...updated[newTurnIndex], responses: { ...updated[newTurnIndex].responses } }
+              turn.responses[s] = { ...turn.responses[s], text: turn.responses[s].text + textChunk }
+              updated[newTurnIndex] = turn
+              return updated
+            })
+          },
+          (thinkingChunk) => {
+            if (s === score) canonicalThinking += thinkingChunk
+            setExplorationTurns((prev) => {
+              const updated = [...prev]
+              const turn = { ...updated[newTurnIndex], responses: { ...updated[newTurnIndex].responses } }
+              turn.responses[s] = { ...turn.responses[s], thinking: turn.responses[s].thinking + thinkingChunk }
+              updated[newTurnIndex] = turn
+              return updated
+            })
+          }
+        ).then(() => {
+          setExplorationTurns((prev) => {
+            const updated = [...prev]
+            const turn = { ...updated[newTurnIndex], responses: { ...updated[newTurnIndex].responses } }
+            turn.responses[s] = { ...turn.responses[s], done: true }
+            updated[newTurnIndex] = turn
+            return updated
+          })
+        })
+      })
+
+      await Promise.all(scorePromises)
+
+      // Persist the user message + canonical assistant response to the DB
+      await fetch(`/api/conversations/${conversationId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [
+            { role: "user", content: question },
             {
               role: "assistant",
-              content: accText,
-              thinking: accThinking || null,
-              createdAt: new Date().toISOString(),
+              content: canonicalText,
+              thinking: canonicalThinking || null,
               sycophancyScore: score,
-              thinkingId: assignedThinkingId,
             },
-          ])
-          setStreamingText("")
-          setStreamingThinking("")
-          setThinkingBlocks((prev) => [
-            ...prev,
-            {
-              id: thinkingCounter,
-              thinking: accThinking,
-              responsePreview: accText.slice(0, 60) + "...",
-            },
-          ])
-          setThinkingCounter((prev) => prev + 1)
-          setIsLoading(false)
-          // Bubble the active conversation to top of sidebar
-          if (conversationId) {
-            const now = new Date().toISOString()
-            setConversations((prev) => {
-              const updated = prev.map((c) =>
-                c.id === conversationId ? { ...c, updatedAt: now } : c
-              )
-              return [
-                updated.find((c) => c.id === conversationId)!,
-                ...updated.filter((c) => c.id !== conversationId),
-              ]
-            })
+          ],
+        }),
+      })
+
+      // Bubble conversation to top of sidebar
+      const now = new Date().toISOString()
+      setConversations((prev) => {
+        const updated = prev.map((c) => (c.id === conversationId ? { ...c, updatedAt: now } : c))
+        return [
+          updated.find((c) => c.id === conversationId)!,
+          ...updated.filter((c) => c.id !== conversationId),
+        ]
+      })
+
+      setIsLoading(false)
+    } else {
+      // ── Normal mode ──────────────────────────────────────────────────────
+      setSliderLocked(true)
+
+      const userMessage: Message = { role: "user", content: question }
+      const newMessages = [...messages, userMessage]
+      setMessages(newMessages)
+      setStreamingText("")
+      setStreamingThinking("")
+
+      // Build full context including any prior exploration turns
+      const apiMessages = [
+        ...explorationTurns.flatMap((t) => [
+          { role: "user" as const, content: t.question },
+          { role: "assistant" as const, content: t.responses[t.canonicalScore]?.text || "" },
+        ]),
+        ...newMessages.map(({ role, content }) => ({ role, content })),
+      ]
+
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        body: JSON.stringify({ messages: apiMessages, fullThinking, conversationId }),
+        headers: { "Content-Type": "application/json" },
+      })
+
+      const reader = res.body!.getReader()
+      const decoder = new TextDecoder()
+      let accText = ""
+      let accThinking = ""
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        const chunk = decoder.decode(value)
+        const lines = chunk.split("\n").filter((l) => l.startsWith("data: "))
+
+        for (const line of lines) {
+          const data = JSON.parse(line.slice(6))
+
+          if (data.type === "thinking") {
+            accThinking += data.text
+            setStreamingThinking(accThinking)
+          } else if (data.type === "text") {
+            accText += data.text
+            setStreamingText(accText)
+          } else if (data.type === "done") {
+            const assignedThinkingId = thinkingCounter
+            setMessages((prev) => [
+              ...prev,
+              {
+                role: "assistant",
+                content: accText,
+                thinking: accThinking || null,
+                createdAt: new Date().toISOString(),
+                sycophancyScore: score,
+                thinkingId: assignedThinkingId,
+              },
+            ])
+            setStreamingText("")
+            setStreamingThinking("")
+            setThinkingBlocks((prev) => [
+              ...prev,
+              {
+                id: thinkingCounter,
+                thinking: accThinking,
+                responsePreview: accText.slice(0, 60) + "...",
+              },
+            ])
+            setThinkingCounter((prev) => prev + 1)
+            setIsLoading(false)
+            if (conversationId) {
+              const now = new Date().toISOString()
+              setConversations((prev) => {
+                const updated = prev.map((c) =>
+                  c.id === conversationId ? { ...c, updatedAt: now } : c
+                )
+                return [
+                  updated.find((c) => c.id === conversationId)!,
+                  ...updated.filter((c) => c.id !== conversationId),
+                ]
+              })
+            }
           }
         }
       }
@@ -390,12 +673,12 @@ export default function Dashboard() {
             </svg>
           </button>
           <span className="text-sm font-medium text-zinc-900">Syconistic Dial</span>
-          <button
+          {/* <button
             onClick={() => router.push("/explore")}
             className="text-xs text-zinc-600 border border-zinc-300 px-2.5 py-1 rounded-md bg-white hover:bg-zinc-50 transition-colors"
           >
             Exploration View
-          </button>
+          </button> */}
         </div>
         <div className="flex items-center gap-3">
           {showAliasTooltip && (
@@ -479,21 +762,38 @@ export default function Dashboard() {
             {conversations.length === 0 && (
               <p className="text-xs text-zinc-400 px-4 py-3">No conversations yet</p>
             )}
-            {conversations.map((conv) => (
-              <button
-                key={conv.id}
-                onClick={() => loadConversationMessages(conv.id)}
-                className={`w-full text-left px-3 py-2.5 mx-1 rounded-lg transition-colors group ${
-                  activeConversationId === conv.id
-                    ? "bg-zinc-100 text-zinc-900"
-                    : "text-zinc-600 hover:bg-zinc-50"
-                }`}
-                style={{ width: "calc(100% - 8px)" }}
-              >
-                <p className="text-xs font-medium truncate leading-snug">{conv.title}</p>
-                <p className="text-[10px] text-zinc-400 mt-0.5">{formatDate(conv.updatedAt)}</p>
-              </button>
-            ))}
+            {conversations.map((conv) => {
+              const convScore = conversationScores[conv.id]
+              const { base, continuation } = parseChatTitle(conv.title)
+              return (
+                <button
+                  key={conv.id}
+                  onClick={() => loadConversationMessages(conv.id)}
+                  className={`w-full text-left px-3 py-2.5 mx-1 rounded-lg transition-colors group ${
+                    activeConversationId === conv.id
+                      ? "bg-zinc-100 text-zinc-900"
+                      : "text-zinc-600 hover:bg-zinc-50"
+                  }`}
+                  style={{ width: "calc(100% - 8px)" }}
+                >
+                  <div className="flex items-start gap-1.5">
+                    <span
+                      className="mt-[3px] w-2 h-2 rounded-full flex-shrink-0"
+                      style={{ backgroundColor: convScore ? LEVEL_COLORS[convScore] : "transparent" }}
+                    />
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium leading-snug break-words whitespace-normal">{base}</p>
+                      {continuation && (
+                        <p className="text-[10px] mt-0.5" style={{ color: convScore ? LEVEL_COLORS[convScore] : "#a1a1aa" }}>
+                          {continuation}
+                        </p>
+                      )}
+                      <p className="text-[10px] text-zinc-400 mt-0.5">{formatDate(conv.updatedAt)}</p>
+                    </div>
+                  </div>
+                </button>
+              )
+            })}
           </div>
         </div>
 
@@ -507,11 +807,165 @@ export default function Dashboard() {
                 <div className="flex items-center justify-center h-full">
                   <p className="text-sm text-zinc-400">Loading...</p>
                 </div>
-              ) : messages.length === 0 && !streamingText ? (
+              ) : messages.length === 0 && explorationTurns.length === 0 && !streamingText && !isLoading ? (
                 <div className="flex items-center justify-center h-full">
                   <p className="text-sm text-zinc-400">Start a conversation...</p>
                 </div>
               ) : null}
+
+              {/* ── Exploration turns (first ≤3 messages of a new chat) ── */}
+              {explorationTurns.map((turn, turnIndex) => {
+                const isLastTurn = turnIndex === 2
+                const allDone = Object.values(turn.responses).every((r) => r.done)
+                return (
+                  <div key={`exp-${turnIndex}`} className="space-y-3">
+                    {/* User message */}
+                    <div className="flex justify-end">
+                      <div className="max-w-[80%] px-4 py-2.5 rounded-2xl bg-zinc-900 text-white text-sm leading-relaxed">
+                        {turn.question}
+                      </div>
+                    </div>
+
+                    {/* Hint label */}
+                    <p className="text-[10px] text-zinc-400 pl-0.5">
+                      {turnIndex === 0
+                        ? "Here's how the response looks across all 5 sycophancy levels. Click any card to see how the AI was thinking."
+                        : isLastTurn
+                        ? "One more round — pick your level to lock in the conversation style."
+                        : "Same question, different styles. Click a card to see the thinking."}
+                    </p>
+
+                    {/* Cards carousel */}
+                    <div
+                      className="flex gap-3 overflow-x-auto pb-2"
+                      style={{ scrollSnapType: "x mandatory", WebkitOverflowScrolling: "touch" }}
+                    >
+                      {Array.from({ length: 5 }, (_, i) => {
+                        const s = i + 1
+                        const resp = turn.responses[s]
+                        const meta = SCORE_LABELS[s]
+                        const isSelected = turn.flippedScore === s
+                        const isThinking = resp && !resp.done && resp.thinking !== "" && resp.text === ""
+                        const isStreaming = resp && !resp.done && resp.text !== ""
+                        const isDone = resp?.done
+                        const isCurrentScore = s === score
+
+                        return (
+                          <div
+                            key={s}
+                            onClick={() => {
+                              if (!isDone) return
+                              const willSelect = turn.flippedScore !== s
+                              toggleExplorationFlip(turnIndex, s)
+                              if (willSelect) {
+                                handleScoreChange(s)
+                                setExplorationThinking({ thinking: resp.thinking, score: s })
+                              } else {
+                                setExplorationThinking(null)
+                              }
+                            }}
+                            style={{ scrollSnapAlign: "start", minWidth: "220px", maxWidth: "220px" }}
+                            className={`flex flex-col rounded-xl border p-3.5 flex-shrink-0 transition-all duration-150 ${
+                              isSelected
+                                ? "border-zinc-800 shadow-md bg-white"
+                                : isDone
+                                ? `${meta.pillBg} ${meta.pillBorder} cursor-pointer hover:shadow-sm`
+                                : `${meta.pillBg} ${meta.pillBorder} cursor-default opacity-80`
+                            }`}
+                          >
+                            {/* Card header */}
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] font-mono text-zinc-400 tabular-nums">{s}</span>
+                                <span className="text-xs font-semibold" style={{ color: meta.hex }}>{meta.label}</span>
+                                {isCurrentScore && (
+                                  <span
+                                    className="text-[9px] rounded px-1 py-0.5 leading-none font-medium"
+                                    style={{ color: meta.hex, border: `1px solid ${meta.hex}`, opacity: 0.8 }}
+                                  >
+                                    current
+                                  </span>
+                                )}
+                              </div>
+                              <span className={`text-[10px] ${isDone ? "text-zinc-300" : "text-amber-400"}`}>
+                                {isDone
+                                  ? resp.thinking ? "💭 click" : "✓"
+                                  : isThinking ? "thinking…"
+                                  : isStreaming ? "writing…"
+                                  : "waiting…"}
+                              </span>
+                            </div>
+
+                            {/* Card body — always shows response text */}
+                            <div className="flex-1 overflow-y-auto h-36">
+                              {isThinking && (
+                                <div>
+                                  <p className="text-[10px] text-amber-500 font-medium mb-1.5 animate-pulse">Thinking…</p>
+                                  <p className="text-[11px] text-zinc-400 leading-relaxed whitespace-pre-wrap line-clamp-6">{resp.thinking}</p>
+                                </div>
+                              )}
+                              {(isStreaming || isDone) && resp.text && (
+                                <MarkdownText content={resp.text} className="!text-xs text-zinc-700" />
+                              )}
+                              {isStreaming && (
+                                <span className="inline-block w-1 h-3 bg-zinc-400 ml-0.5 animate-pulse" />
+                              )}
+                              {!isThinking && !isStreaming && !isDone && (
+                                <div className="flex gap-1 pt-2">
+                                  <span className="w-1.5 h-1.5 bg-zinc-300 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                                  <span className="w-1.5 h-1.5 bg-zinc-300 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                                  <span className="w-1.5 h-1.5 bg-zinc-300 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+
+                    {/* Confirm bar — slim row shown when a card is selected and all responses are done */}
+                    {turn.flippedScore !== null && allDone && (() => {
+                      const meta = SCORE_LABELS[turn.flippedScore]
+                      return (
+                        <div className="flex items-center justify-between px-4 py-2.5 rounded-xl bg-white border border-zinc-200">
+                          <span className="text-xs text-zinc-500">
+                            <span className="font-semibold" style={{ color: meta.hex }}>Level {turn.flippedScore} · {meta.label}</span>
+                            {" "}{isLastTurn ? "— lock this in?" : "— use this for the next round?"}
+                          </span>
+                          <button
+                            onClick={() => chooseExplorationLevel(turn.flippedScore!, turnIndex, isLastTurn)}
+                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold text-white flex-shrink-0 ml-3"
+                            style={{ backgroundColor: meta.hex }}
+                          >
+                            {isLastTurn ? "Lock in" : "Choose"}
+                            <span>→</span>
+                          </button>
+                        </div>
+                      )
+                    })()}
+
+                    {/* Lock-in confirmation banner (shown after confirming on turn 3) */}
+                    {isLastTurn && explorationConfirmed && (() => {
+                      const meta = SCORE_LABELS[score]
+                      return (
+                        <div
+                          className="rounded-xl px-4 py-3 text-xs leading-relaxed"
+                          style={{
+                            backgroundColor: `${meta.hex}12`,
+                            border: `1px solid ${meta.hex}40`,
+                            color: meta.hex,
+                          }}
+                        >
+                          <span className="font-semibold">Level {score} — {meta.label}</span> is now locked for this conversation.{" "}
+                          <span className="text-zinc-500">To chat at a different level, click <span className="font-medium text-zinc-600">&ldquo;Continue at a different level&rdquo;</span> in the right panel.</span>
+                        </div>
+                      )
+                    })()}
+                  </div>
+                )
+              })}
+
+              {/* ── Normal messages (post-exploration or forked conversations) ── */}
               {messages.map((msg, i) => (
                 <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
                   {msg.role === "user" ? (
@@ -551,7 +1005,7 @@ export default function Dashboard() {
                   </div>
                 </div>
               )}
-              {isLoading && !streamingText && (
+              {isLoading && !streamingText && messages.length > 0 && (
                 <div className="flex justify-start">
                   <div className="px-4 py-2.5 rounded-2xl bg-white border border-zinc-200">
                     <div className="flex gap-1">
@@ -605,23 +1059,45 @@ export default function Dashboard() {
             <div className="px-6 py-5 bg-white border-b border-zinc-200">
               <div className="flex items-center justify-between mb-3">
                 <span className="text-xs font-medium text-zinc-500 uppercase tracking-wide">Response Style</span>
-                <span className="text-xs font-semibold text-zinc-900">{getSliderLabel(score)}</span>
+                <div className="flex items-center gap-1.5">
+                  {sliderLocked && (
+                    <svg width="11" height="11" viewBox="0 0 11 11" fill="none" className="text-zinc-400 flex-shrink-0">
+                      <rect x="2" y="5" width="7" height="5" rx="1.2" fill="currentColor" />
+                      <path d="M3.5 5V3.5a2 2 0 014 0V5" stroke="currentColor" strokeWidth="1.3" fill="none" strokeLinecap="round" />
+                    </svg>
+                  )}
+                  <span className="text-xs font-semibold text-zinc-900">{getSliderLabel(score)}</span>
+                </div>
               </div>
-              {showScoreTooltip && (
+              {showScoreTooltip && !sliderLocked && (
                 <div className="flex items-center gap-1.5 px-2.5 py-1.5 mb-3 text-xs text-zinc-900 border border-zinc-200 rounded-lg bg-white shadow-sm">
                   <span
                     className="w-2 h-2 rounded-full flex-shrink-0 cursor-pointer hover:opacity-75 transition-opacity"
                     style={{ backgroundColor: "#fc5432" }}
                     onClick={() => setScoreTooltipDismissed(true)}
                   />
-                  Tune how agreeable or critical the AI is with the slider.
+                  {isNewChat && explorationTurns.length < 3
+                    ? "Click any response card to jump to that level, or drag the slider to fine-tune."
+                    : "Tune how agreeable or critical the AI should be in the current chat with the slider."}
                 </div>
               )}
-              <SycophancySlider score={score} onChange={handleScoreChange} />
+              <SycophancySlider score={score} onChange={handleScoreChange} disabled={sliderLocked} />
               <div className="flex justify-between -mt-1">
                 <span className="text-xs text-zinc-400">Antagonistic</span>
                 <span className="text-xs text-zinc-400">Sycophantic</span>
               </div>
+              {sliderLocked && (
+                <button
+                  onClick={forkConversation}
+                  disabled={isLoading}
+                  className="mt-4 w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-zinc-600 border border-zinc-200 rounded-lg hover:bg-zinc-50 hover:border-zinc-300 transition-colors disabled:opacity-40"
+                >
+                  <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                    <path d="M2 2.5h3.5M7.5 2.5H11M4 2.5v2.5a3 3 0 003 3M9 2.5v2.5a3 3 0 01-3 3M6.5 8v2.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  Continue with different level
+                </button>
+              )}
             </div>
 
             {/* Thinking mode */}
@@ -638,9 +1114,27 @@ export default function Dashboard() {
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
               <span className="text-xs font-medium text-zinc-500 uppercase tracking-wide">Thinking Process</span>
 
-              {thinkingBlocks.length === 0 && !streamingThinking && (
+              {thinkingBlocks.length === 0 && !streamingThinking && !explorationThinking && (
                 <p className="text-xs text-zinc-400 mt-2">Thinking will appear here...</p>
               )}
+
+              {/* Exploration thinking — shown when user clicks a card during first 3 turns */}
+              {explorationThinking && thinkingBlocks.length === 0 && !streamingThinking && (() => {
+                const meta = SCORE_LABELS[explorationThinking.score]
+                return (
+                  <div className="rounded-xl p-4 mt-3 border border-zinc-200 bg-zinc-50">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-[10px] font-mono text-zinc-400">{explorationThinking.score}</span>
+                      <span className="text-xs font-semibold" style={{ color: meta.hex }}>{meta.label}</span>
+                    </div>
+                    {explorationThinking.thinking ? (
+                      <p className="text-xs text-zinc-600 leading-relaxed whitespace-pre-wrap">{explorationThinking.thinking}</p>
+                    ) : (
+                      <p className="text-xs text-zinc-400 italic">No thinking captured for this response.</p>
+                    )}
+                  </div>
+                )
+              })()}
 
               {thinkingBlocks.map((block) => (
                 <div
