@@ -5,8 +5,6 @@ import { MarkdownText } from "@/lib/markdown"
 import { FeedbackWidget } from "@/components/FeedbackWidget"
 import { buildLoginRedirect } from "@/lib/auth"
 
-// ─── Score metadata (shared with exploration cards) ──────────────────────────
-
 type ScoreMeta = { label: string; hex: string; pillBg: string; pillBorder: string }
 
 const SCORE_LABELS: Record<number, ScoreMeta> = {
@@ -23,12 +21,10 @@ interface Message {
   thinking?: string | null
   createdAt?: string | null
   sycophancyScore?: number | null
-  thinkingId?: number
 }
 
 interface ExplorationResponse {
   text: string
-  thinking: string
   done: boolean
 }
 
@@ -37,12 +33,6 @@ interface ExplorationTurn {
   canonicalScore: number
   responses: Record<number, ExplorationResponse>
   flippedScore: number | null
-}
-
-interface ThinkingBlock {
-  id: number
-  thinking: string
-  responsePreview: string
 }
 
 interface Conversation {
@@ -92,7 +82,6 @@ function getForkTitle(sourceTitle: string): string {
   return `${sourceTitle} (continued - part 2)`
 }
 
-
 function SycophancySlider({ score, onChange, disabled }: { score: number; onChange: (v: number) => void; disabled?: boolean }) {
   const trackRef = useRef<HTMLDivElement>(null)
 
@@ -123,22 +112,14 @@ function SycophancySlider({ score, onChange, disabled }: { score: number; onChan
           onChange(getScoreFromPointer(e.clientX))
         }}
       >
-        {/* Track line */}
         <div className="absolute left-0 right-0 top-1/2 h-[3px] bg-zinc-200 rounded-full -translate-y-1/2" />
-
-        {/* Tick marks */}
         {[1, 2, 3, 4, 5].map((level) => (
           <div
             key={level}
             className="absolute top-1/2 w-[3px] h-[3px] rounded-full bg-zinc-400"
-            style={{
-              left: `${((level - 1) / 4) * 100}%`,
-              transform: "translate(-50%, -50%)",
-            }}
+            style={{ left: `${((level - 1) / 4) * 100}%`, transform: "translate(-50%, -50%)" }}
           />
         ))}
-
-        {/* Square thumb */}
         <div
           className="absolute top-1/2 flex items-center justify-center select-none"
           style={{
@@ -165,17 +146,13 @@ function SycophancySlider({ score, onChange, disabled }: { score: number; onChan
   )
 }
 
-export default function Dashboard() {
+export default function ChatDefault() {
   const [alias, setAlias] = useState("")
   const [score, setScore] = useState(3)
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [streamingText, setStreamingText] = useState("")
-  const [streamingThinking, setStreamingThinking] = useState("")
-  const [thinkingBlocks, setThinkingBlocks] = useState<ThinkingBlock[]>([])
-  const [thinkingCounter, setThinkingCounter] = useState(0)
-  const [fullThinking] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
@@ -190,23 +167,10 @@ export default function Dashboard() {
   const [explorationTurns, setExplorationTurns] = useState<ExplorationTurn[]>([])
   const [isNewChat, setIsNewChat] = useState(false)
   const [explorationConfirmed, setExplorationConfirmed] = useState(false)
-  const [explorationThinking, setExplorationThinking] = useState<{ thinking: string; score: number } | null>(null)
 
   const aliasInputRef = useRef<HTMLInputElement>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)
-  const thinkingEndRef = useRef<HTMLDivElement>(null)
-  const thinkingBlockRefs = useRef<Map<number, HTMLDivElement>>(new Map())
-  const [highlightedThinkingId, setHighlightedThinkingId] = useState<number | null>(null)
   const router = useRouter()
-
-  function scrollToThinking(thinkingId: number) {
-    const el = thinkingBlockRefs.current.get(thinkingId)
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "nearest" })
-      setHighlightedThinkingId(thinkingId)
-      setTimeout(() => setHighlightedThinkingId(null), 1400)
-    }
-  }
 
   useEffect(() => {
     Promise.all([
@@ -214,7 +178,7 @@ export default function Dashboard() {
       fetch("/api/conversations").then((r) => r.json()),
     ]).then(async ([sessionRes, convsData]) => {
       if (!sessionRes.ok) {
-        router.replace(buildLoginRedirect("/chat-reasoning"))
+        router.replace(buildLoginRedirect("/chat-default"))
         return
       }
       const sessionData = await sessionRes.json()
@@ -222,7 +186,6 @@ export default function Dashboard() {
       setScore(sessionData.sycophancyScore ?? 4)
       const convs: Conversation[] = convsData.conversations ?? []
       setConversations(convs)
-      // Pre-populate scores so sidebar dots are visible immediately
       const scores: Record<string, number> = {}
       for (const c of convs) {
         if (c.sycophancyScore != null) scores[c.id] = c.sycophancyScore
@@ -239,10 +202,6 @@ export default function Dashboard() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [messages, streamingText])
 
-  useEffect(() => {
-    thinkingEndRef.current?.scrollIntoView({ behavior: "smooth" })
-  }, [streamingThinking])
-
   async function loadConversationMessages(conversationId: string) {
     if (activeConversationId && activeConversationId !== conversationId && messages.some((m) => m.role === "assistant")) {
       triggerSummarize(activeConversationId)
@@ -250,42 +209,21 @@ export default function Dashboard() {
     setLoadingConversation(true)
     setActiveConversationId(conversationId)
     setStreamingText("")
-    setStreamingThinking("")
     const res = await fetch(`/api/conversations/${conversationId}/messages`)
     const data = await res.json()
     const rawMessages: Message[] = data.messages ?? []
 
-    // Rebuild thinking blocks from stored thinking and assign thinkingIds
-    const rebuiltBlocks: ThinkingBlock[] = []
-    let tidCounter = 0
-    const messagesWithIds = rawMessages.map((m) => {
-      if (m.role === "assistant" && m.thinking) {
-        const tid = tidCounter++
-        rebuiltBlocks.push({
-          id: tid,
-          thinking: m.thinking,
-          responsePreview: m.content.slice(0, 60) + "...",
-        })
-        return { ...m, thinkingId: tid }
-      }
-      return m
-    })
-
-    setMessages(messagesWithIds)
-    setThinkingBlocks(rebuiltBlocks)
-    setThinkingCounter(tidCounter)
-    setLastFeedbackAt(messagesWithIds.filter((m) => m.role === "assistant").length)
+    setMessages(rawMessages)
+    setLastFeedbackAt(rawMessages.filter((m) => m.role === "assistant").length)
     setLoadingConversation(false)
     setExplorationTurns([])
     setIsNewChat(false)
     setExplorationConfirmed(false)
-    setExplorationThinking(null)
 
-    // Lock slider and restore score from conversation
-    const hasMessages = messagesWithIds.length > 0
+    const hasMessages = rawMessages.length > 0
     setSliderLocked(hasMessages)
     if (hasMessages) {
-      const firstAssistant = messagesWithIds.find((m) => m.role === "assistant" && m.sycophancyScore != null)
+      const firstAssistant = rawMessages.find((m) => m.role === "assistant" && m.sycophancyScore != null)
       if (firstAssistant?.sycophancyScore) {
         setScore(firstAssistant.sycophancyScore)
         setConversationScores((prev) => ({ ...prev, [conversationId]: firstAssistant.sycophancyScore! }))
@@ -303,16 +241,13 @@ export default function Dashboard() {
     }
     setActiveConversationId(null)
     setMessages([])
-    setThinkingBlocks([])
     setStreamingText("")
-    setStreamingThinking("")
     setInput("")
     setLastFeedbackAt(0)
     setSliderLocked(false)
     setExplorationTurns([])
     setIsNewChat(true)
     setExplorationConfirmed(false)
-    setExplorationThinking(null)
   }
 
   async function handleScoreChange(newScore: number) {
@@ -330,6 +265,14 @@ export default function Dashboard() {
 
     if (activeConversationId) triggerSummarize(activeConversationId)
 
+    const strippedMessages: Message[] = messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+      createdAt: m.createdAt,
+      sycophancyScore: m.sycophancyScore,
+      thinking: null,
+    }))
+
     const sourceTitle = conversations.find((c) => c.id === activeConversationId)?.title ?? "Conversation"
     const res = await fetch("/api/conversations", {
       method: "POST",
@@ -340,17 +283,14 @@ export default function Dashboard() {
 
     setConversations((prev) => [newConv, ...prev])
     setActiveConversationId(newConv.id)
-    // Keep messages with thinking + thinkingId intact so the panel carries over
+    setMessages(strippedMessages)
     setStreamingText("")
-    setStreamingThinking("")
     setInput("")
-    setLastFeedbackAt(messages.filter((m) => m.role === "assistant").length)
+    setLastFeedbackAt(strippedMessages.filter((m) => m.role === "assistant").length)
     setSliderLocked(false)
     setExplorationTurns([])
     setIsNewChat(false)
     setExplorationConfirmed(false)
-    setExplorationThinking(null)
-    // thinkingBlocks and thinkingCounter stay unchanged so existing blocks remain visible
   }
 
   async function handleAliasUpdate(newAlias: string) {
@@ -364,13 +304,10 @@ export default function Dashboard() {
     })
   }
 
-  // ── streamScore (used by exploration mode) ──────────────────────────────
-
   async function streamScore(
     s: number,
     apiMessages: { role: string; content: string }[],
-    onText: (chunk: string) => void,
-    onThinking: (chunk: string) => void
+    onText: (chunk: string) => void
   ) {
     const res = await fetch("/api/explore-chat", {
       method: "POST",
@@ -386,7 +323,6 @@ export default function Dashboard() {
       for (const line of chunk.split("\n").filter((l) => l.startsWith("data: "))) {
         const data = JSON.parse(line.slice(6))
         if (data.type === "text") onText(data.text)
-        else if (data.type === "thinking") onThinking(data.text)
       }
     }
   }
@@ -404,7 +340,6 @@ export default function Dashboard() {
   async function chooseExplorationLevel(s: number, turnIndex: number) {
     await handleScoreChange(s)
 
-    // Persist the chosen level back to the assistant message for this turn in the DB
     if (activeConversationId) {
       fetch(`/api/conversations/${activeConversationId}/messages`, {
         method: "PATCH",
@@ -417,8 +352,6 @@ export default function Dashboard() {
     setExplorationConfirmed(true)
   }
 
-  // ── handleSend ───────────────────────────────────────────────────────────
-
   async function handleSend() {
     if (!input.trim() || isLoading) return
 
@@ -428,7 +361,6 @@ export default function Dashboard() {
 
     let conversationId = activeConversationId
 
-    // Auto-create a conversation on the first message
     if (!conversationId) {
       const res = await fetch("/api/conversations", {
         method: "POST",
@@ -441,7 +373,6 @@ export default function Dashboard() {
       setConversations((prev) => [newConv, ...prev])
     }
 
-    // Record the score for this conversation the first time a message is sent
     if (conversationId) {
       setConversationScores((prev) => prev[conversationId!] ? prev : { ...prev, [conversationId!]: score })
     }
@@ -449,9 +380,6 @@ export default function Dashboard() {
     const useExploration = isNewChat && explorationTurns.length < 3 && !explorationConfirmed
 
     if (useExploration) {
-      // ── Exploration mode: stream all 5 sycophancy levels in parallel ──
-
-      // Build context from previous exploration turns (use user's canonical score)
       const contextMessages: { role: "user" | "assistant"; content: string }[] = [
         ...explorationTurns.flatMap((t) => [
           { role: "user" as const, content: t.question },
@@ -462,15 +390,13 @@ export default function Dashboard() {
 
       const newTurnIndex = explorationTurns.length
       const emptyResponses: Record<number, ExplorationResponse> = {}
-      for (let s = 1; s <= 5; s++) emptyResponses[s] = { text: "", thinking: "", done: false }
+      for (let s = 1; s <= 5; s++) emptyResponses[s] = { text: "", done: false }
       setExplorationTurns((prev) => [
         ...prev,
         { question, canonicalScore: score, responses: emptyResponses, flippedScore: null },
       ])
 
-      // Track canonical text locally to persist after streaming
       let canonicalText = ""
-      let canonicalThinking = ""
 
       const scorePromises = Array.from({ length: 5 }, (_, i) => {
         const s = i + 1
@@ -483,16 +409,6 @@ export default function Dashboard() {
               const updated = [...prev]
               const turn = { ...updated[newTurnIndex], responses: { ...updated[newTurnIndex].responses } }
               turn.responses[s] = { ...turn.responses[s], text: turn.responses[s].text + textChunk }
-              updated[newTurnIndex] = turn
-              return updated
-            })
-          },
-          (thinkingChunk) => {
-            if (s === score) canonicalThinking += thinkingChunk
-            setExplorationTurns((prev) => {
-              const updated = [...prev]
-              const turn = { ...updated[newTurnIndex], responses: { ...updated[newTurnIndex].responses } }
-              turn.responses[s] = { ...turn.responses[s], thinking: turn.responses[s].thinking + thinkingChunk }
               updated[newTurnIndex] = turn
               return updated
             })
@@ -510,24 +426,17 @@ export default function Dashboard() {
 
       await Promise.all(scorePromises)
 
-      // Persist the user message + canonical assistant response to the DB
       await fetch(`/api/conversations/${conversationId}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: [
             { role: "user", content: question },
-            {
-              role: "assistant",
-              content: canonicalText,
-              thinking: canonicalThinking || null,
-              sycophancyScore: score,
-            },
+            { role: "assistant", content: canonicalText, thinking: null, sycophancyScore: score },
           ],
         }),
       })
 
-      // Bubble conversation to top of sidebar
       const now = new Date().toISOString()
       setConversations((prev) => {
         const updated = prev.map((c) => (c.id === conversationId ? { ...c, updatedAt: now } : c))
@@ -539,16 +448,13 @@ export default function Dashboard() {
 
       setIsLoading(false)
     } else {
-      // ── Normal mode ──────────────────────────────────────────────────────
       setSliderLocked(true)
 
       const userMessage: Message = { role: "user", content: question }
       const newMessages = [...messages, userMessage]
       setMessages(newMessages)
       setStreamingText("")
-      setStreamingThinking("")
 
-      // Build full context including any prior exploration turns
       const apiMessages = [
         ...explorationTurns.flatMap((t) => [
           { role: "user" as const, content: t.question },
@@ -559,14 +465,13 @@ export default function Dashboard() {
 
       const res = await fetch("/api/chat", {
         method: "POST",
-        body: JSON.stringify({ messages: apiMessages, fullThinking, conversationId }),
+        body: JSON.stringify({ messages: apiMessages, fullThinking: false, conversationId }),
         headers: { "Content-Type": "application/json" },
       })
 
       const reader = res.body!.getReader()
       const decoder = new TextDecoder()
       let accText = ""
-      let accThinking = ""
 
       while (true) {
         const { done, value } = await reader.read()
@@ -578,36 +483,21 @@ export default function Dashboard() {
         for (const line of lines) {
           const data = JSON.parse(line.slice(6))
 
-          if (data.type === "thinking") {
-            accThinking += data.text
-            setStreamingThinking(accThinking)
-          } else if (data.type === "text") {
+          if (data.type === "text") {
             accText += data.text
             setStreamingText(accText)
           } else if (data.type === "done") {
-            const assignedThinkingId = thinkingCounter
             setMessages((prev) => [
               ...prev,
               {
                 role: "assistant",
                 content: accText,
-                thinking: accThinking || null,
+                thinking: null,
                 createdAt: new Date().toISOString(),
                 sycophancyScore: score,
-                thinkingId: assignedThinkingId,
               },
             ])
             setStreamingText("")
-            setStreamingThinking("")
-            setThinkingBlocks((prev) => [
-              ...prev,
-              {
-                id: thinkingCounter,
-                thinking: accThinking,
-                responsePreview: accText.slice(0, 60) + "...",
-              },
-            ])
-            setThinkingCounter((prev) => prev + 1)
             setIsLoading(false)
             if (conversationId) {
               const now = new Date().toISOString()
@@ -647,13 +537,14 @@ export default function Dashboard() {
 
   const showAliasTooltip = !alias && !aliasTooltipDismissed
   const showScoreTooltip = !scoreTooltipDismissed
+  // suppress unused warning
+  void scoreManuallySet
 
   return (
     <div className="flex flex-col h-screen bg-zinc-50 font-roboto">
       {/* Header */}
       <header className="flex items-center justify-between px-4 py-3 bg-white border-b border-zinc-200 z-10">
         <div className="flex items-center gap-3">
-          {/* Sidebar toggle */}
           <button
             onClick={() => setSidebarOpen((prev) => !prev)}
             className="p-1.5 rounded-md hover:bg-zinc-100 transition-colors text-zinc-500"
@@ -666,12 +557,6 @@ export default function Dashboard() {
             </svg>
           </button>
           <span className="text-sm font-medium text-zinc-900">Syconistic Dial</span>
-          {/* <button
-            onClick={() => router.push("/explore")}
-            className="text-xs text-zinc-600 border border-zinc-300 px-2.5 py-1 rounded-md bg-white hover:bg-zinc-50 transition-colors"
-          >
-            Exploration View
-          </button> */}
         </div>
         <div className="flex items-center gap-3">
           {showAliasTooltip && (
@@ -806,29 +691,26 @@ export default function Dashboard() {
                 </div>
               ) : null}
 
-              {/* ── Exploration turns (first ≤3 messages of a new chat) ── */}
+              {/* Exploration turns */}
               {explorationTurns.map((turn, turnIndex) => {
                 const isLastTurn = turnIndex === 2
                 const allDone = Object.values(turn.responses).every((r) => r.done)
                 return (
                   <div key={`exp-${turnIndex}`} className="space-y-3">
-                    {/* User message */}
                     <div className="flex justify-end">
                       <div className="max-w-[80%] px-4 py-2.5 rounded-2xl bg-zinc-900 text-white text-sm leading-relaxed">
                         {turn.question}
                       </div>
                     </div>
 
-                    {/* Hint label */}
                     <p className="text-[10px] text-zinc-400 pl-0.5">
                       {turnIndex === 0
-                        ? "Here's how the response looks across all 5 sycophancy levels. Click any card to see how the AI was thinking."
+                        ? "Here's how the response looks across all 5 sycophancy levels."
                         : isLastTurn
                         ? "One more round — pick your level to lock in the conversation style."
-                        : "Same question, different styles. Click a card to see the thinking."}
+                        : "Same question, different styles. Pick a card to choose."}
                     </p>
 
-                    {/* Confirm bar — shown above carousel so it's visible without scrolling */}
                     {turn.flippedScore !== null && allDone && (() => {
                       const meta = SCORE_LABELS[turn.flippedScore]
                       return (
@@ -849,7 +731,6 @@ export default function Dashboard() {
                       )
                     })()}
 
-                    {/* Cards carousel */}
                     <div
                       className="flex gap-3 overflow-x-auto pb-2"
                       style={{ scrollSnapType: "x mandatory", WebkitOverflowScrolling: "touch" }}
@@ -859,7 +740,6 @@ export default function Dashboard() {
                         const resp = turn.responses[s]
                         const meta = SCORE_LABELS[s]
                         const isSelected = turn.flippedScore === s
-                        const isThinking = resp && !resp.done && resp.thinking !== "" && resp.text === ""
                         const isStreaming = resp && !resp.done && resp.text !== ""
                         const isDone = resp?.done
                         const isCurrentScore = s === score
@@ -869,14 +749,8 @@ export default function Dashboard() {
                             key={s}
                             onClick={() => {
                               if (!isDone) return
-                              const willSelect = turn.flippedScore !== s
                               toggleExplorationFlip(turnIndex, s)
-                              if (willSelect) {
-                                handleScoreChange(s)
-                                setExplorationThinking({ thinking: resp.thinking, score: s })
-                              } else {
-                                setExplorationThinking(null)
-                              }
+                              handleScoreChange(s)
                             }}
                             style={{ scrollSnapAlign: "start", minWidth: "220px", maxWidth: "220px" }}
                             className={`flex flex-col rounded-xl border p-3.5 flex-shrink-0 transition-all duration-150 ${
@@ -887,7 +761,6 @@ export default function Dashboard() {
                                 : `${meta.pillBg} ${meta.pillBorder} cursor-default opacity-80`
                             }`}
                           >
-                            {/* Card header */}
                             <div className="flex items-center justify-between mb-2">
                               <div className="flex items-center gap-1.5">
                                 <span className="text-[10px] font-mono text-zinc-400 tabular-nums">{s}</span>
@@ -902,29 +775,18 @@ export default function Dashboard() {
                                 )}
                               </div>
                               <span className={`text-[10px] ${isDone ? "text-zinc-300" : "text-amber-400"}`}>
-                                {isDone
-                                  ? resp.thinking ? "💭 click" : "✓"
-                                  : isThinking ? "thinking…"
-                                  : isStreaming ? "writing…"
-                                  : "waiting…"}
+                                {isDone ? "✓" : isStreaming ? "writing…" : "waiting…"}
                               </span>
                             </div>
 
-                            {/* Card body — always shows response text */}
                             <div className="flex-1 overflow-y-auto h-36">
-                              {isThinking && (
-                                <div>
-                                  <p className="text-[10px] text-amber-500 font-medium mb-1.5 animate-pulse">Thinking…</p>
-                                  <p className="text-[11px] text-zinc-400 leading-relaxed whitespace-pre-wrap line-clamp-6">{resp.thinking}</p>
-                                </div>
-                              )}
                               {(isStreaming || isDone) && resp.text && (
                                 <MarkdownText content={resp.text} className="!text-xs text-zinc-700" />
                               )}
                               {isStreaming && (
                                 <span className="inline-block w-1 h-3 bg-zinc-400 ml-0.5 animate-pulse" />
                               )}
-                              {!isThinking && !isStreaming && !isDone && (
+                              {!isStreaming && !isDone && (
                                 <div className="flex gap-1 pt-2">
                                   <span className="w-1.5 h-1.5 bg-zinc-300 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
                                   <span className="w-1.5 h-1.5 bg-zinc-300 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
@@ -937,7 +799,6 @@ export default function Dashboard() {
                       })}
                     </div>
 
-                    {/* Lock-in confirmation banner */}
                     {explorationConfirmed && turnIndex === explorationTurns.length - 1 && (() => {
                       const meta = SCORE_LABELS[score]
                       return (
@@ -958,7 +819,7 @@ export default function Dashboard() {
                 )
               })}
 
-              {/* ── Normal messages (post-exploration or forked conversations) ── */}
+              {/* Normal messages */}
               {messages.map((msg, i) => (
                 <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
                   {msg.role === "user" ? (
@@ -968,12 +829,10 @@ export default function Dashboard() {
                   ) : (
                     <div className="max-w-[80%] flex flex-col gap-1">
                       <div
-                        className={`px-4 py-2.5 rounded-2xl bg-white text-zinc-800 transition-shadow duration-200 ${msg.thinkingId != null ? "cursor-pointer hover:shadow-md" : ""}`}
+                        className="px-4 py-2.5 rounded-2xl bg-white text-zinc-800"
                         style={{
                           border: `1.5px solid ${msg.sycophancyScore ? getSliderColor(msg.sycophancyScore) : "#c8c8d0"}`,
                         }}
-                        onClick={() => msg.thinkingId != null && scrollToThinking(msg.thinkingId)}
-                        title={msg.thinkingId != null ? "Click to see thinking process" : undefined}
                       >
                         <MarkdownText content={msg.content} />
                       </div>
@@ -990,6 +849,7 @@ export default function Dashboard() {
                   )}
                 </div>
               ))}
+
               {streamingText && (
                 <div className="flex justify-start">
                   <div className="max-w-[80%] px-4 py-2.5 rounded-2xl bg-white border border-zinc-200 text-zinc-800">
@@ -1048,10 +908,8 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Right panel */}
-          <div className="flex flex-col w-[380px] flex-shrink-0 overflow-hidden">
-
-            {/* Sycophancy slider */}
+          {/* Right panel — sycophancy slider only */}
+          <div className="flex flex-col w-72 flex-shrink-0 overflow-hidden">
             <div className="px-6 py-5 bg-white border-b border-zinc-200">
               <div className="flex items-center justify-between mb-3">
                 <span className="text-xs font-medium text-zinc-500 uppercase tracking-wide">Response Style</span>
@@ -1095,71 +953,8 @@ export default function Dashboard() {
                 </button>
               )}
             </div>
-
-            {/* Thinking mode */}
-            <div className="px-6 py-3 bg-white border-b border-zinc-200 flex items-center justify-between">
-              <div className="flex flex-col">
-                <span className="text-xs font-medium text-zinc-500 uppercase tracking-wide">Thinking Mode</span>
-                <span className="text-xs text-zinc-400 mt-0.5">
-                  {fullThinking ? "Full — claude-sonnet-3-7" : "Reasoning Summary — claude-sonnet-4-6"}
-                </span>
-              </div>
-            </div>
-
-            {/* Thinking process */}
-            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-              <span className="text-xs font-medium text-zinc-500 uppercase tracking-wide">Thinking Process</span>
-
-              {thinkingBlocks.length === 0 && !streamingThinking && !explorationThinking && (
-                <p className="text-xs text-zinc-400 mt-2">Thinking will appear here...</p>
-              )}
-
-              {/* Exploration thinking — shown when user clicks a card during first 3 turns */}
-              {explorationThinking && thinkingBlocks.length === 0 && !streamingThinking && (() => {
-                const meta = SCORE_LABELS[explorationThinking.score]
-                return (
-                  <div className="rounded-xl p-4 mt-3 border border-zinc-200 bg-zinc-50">
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="text-[10px] font-mono text-zinc-400">{explorationThinking.score}</span>
-                      <span className="text-xs font-semibold" style={{ color: meta.hex }}>{meta.label}</span>
-                    </div>
-                    {explorationThinking.thinking ? (
-                      <p className="text-xs text-zinc-600 leading-relaxed whitespace-pre-wrap">{explorationThinking.thinking}</p>
-                    ) : (
-                      <p className="text-xs text-zinc-400 italic">No thinking captured for this response.</p>
-                    )}
-                  </div>
-                )
-              })()}
-
-              {thinkingBlocks.map((block) => (
-                <div
-                  key={block.id}
-                  ref={(el) => {
-                    if (el) thinkingBlockRefs.current.set(block.id, el)
-                    else thinkingBlockRefs.current.delete(block.id)
-                  }}
-                  className={`rounded-xl p-4 mt-3 border transition-colors duration-300 ${
-                    highlightedThinkingId === block.id
-                      ? "bg-amber-50 border-amber-300"
-                      : "bg-zinc-50 border-zinc-200"
-                  }`}
-                >
-                  <p className="text-xs text-zinc-400 mb-2 italic">Re: &ldquo;{block.responsePreview}&rdquo;</p>
-                  <p className="text-xs text-zinc-600 leading-relaxed whitespace-pre-wrap">{block.thinking}</p>
-                </div>
-              ))}
-
-              {streamingThinking && (
-                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mt-3">
-                  <p className="text-xs text-amber-500 mb-2 font-medium">Thinking...</p>
-                  <p className="text-xs text-zinc-600 leading-relaxed whitespace-pre-wrap">{streamingThinking}</p>
-                  <span className="inline-block w-1 h-3 bg-amber-400 ml-0.5 animate-pulse" />
-                </div>
-              )}
-              <div ref={thinkingEndRef} />
-            </div>
           </div>
+
         </div>
       </div>
     </div>

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { cookies } from "next/headers"
 import { eq, desc } from "drizzle-orm"
 import { db } from "@/lib/db"
-import { sessions } from "@/lib/schema"
+import { participants, sessions } from "@/lib/schema"
 
 export async function GET() {
   const cookieStore = await cookies()
@@ -12,17 +12,27 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  const session = await db.query.sessions.findFirst({
-    where: eq(sessions.participantId, participantId),
-    orderBy: desc(sessions.loginAt),
-  })
+  const [session, participant] = await Promise.all([
+    db.query.sessions.findFirst({
+      where: eq(sessions.participantId, participantId),
+      orderBy: desc(sessions.loginAt),
+    }),
+    db.query.participants.findFirst({
+      where: eq(participants.id, participantId),
+    }),
+  ])
 
   if (!session) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 })
   }
 
+  // Use participant.alias as the source of truth — it's always kept up-to-date
+  // by PATCH /api/session. session.alias is only a snapshot taken at login time
+  // and may be stale if the alias was set after the session was created.
+  const alias = participant?.alias || session.alias
+
   return NextResponse.json({
-    alias: session.alias,
+    alias,
     sycophancyScore: session.sycophancyScore,
   })
 }
@@ -67,6 +77,13 @@ export async function PATCH(req: Request) {
   await db.update(sessions)
     .set(updateData)
     .where(eq(sessions.id, session.id))
+
+  // Keep alias in sync on the participant row so it persists across logins
+  if (typeof alias === "string") {
+    await db.update(participants)
+      .set({ alias })
+      .where(eq(participants.id, participantId))
+  }
 
   return NextResponse.json({ success: true })
 }

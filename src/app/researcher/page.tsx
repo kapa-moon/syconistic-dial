@@ -521,9 +521,12 @@ export default function ResearcherView() {
               <button
                 onClick={handleSend}
                 disabled={isLoading || !input.trim()}
-                className="px-4 py-2 bg-zinc-900 text-white text-sm rounded-xl hover:bg-zinc-700 transition-colors disabled:opacity-40"
+                className="p-2.5 bg-zinc-900 text-white rounded-xl hover:bg-zinc-700 transition-colors disabled:opacity-40 flex items-center justify-center"
+                aria-label="Send"
               >
-                Send
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+                  <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+                </svg>
               </button>
             </div>
           </div>
