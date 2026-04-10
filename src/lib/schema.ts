@@ -71,3 +71,13 @@ export const feedbackRatings = pgTable("feedback_ratings", {
   helpfulnessScore: integer("helpfulness_score"),
   createdAt: timestamp("created_at").defaultNow(),
 })
+
+export const mentorRequests = pgTable("mentor_requests", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  participantId: text("participant_id").references(() => participants.id),
+  content: text("content").notNull(),
+  editorSnapshot: text("editor_snapshot"),
+  resolved: integer("resolved").default(0),
+  resolvedAt: timestamp("resolved_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+})

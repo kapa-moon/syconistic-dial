@@ -31,6 +31,11 @@ const OPTIONS: Option[] = [
     available: false,
     badge: "Coming soon",
   },
+  {
+    title: "I (don't) need AI",
+    href: "/mentor-letter",
+    available: true,
+  },
 ]
 
 export default function HomePage() {
